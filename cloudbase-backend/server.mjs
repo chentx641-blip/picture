@@ -80,8 +80,25 @@ app.post("/export-xlsx", async (req, res) => {
     for (let c = 0; c < columns; c += 1) { const role = columnRoles[c] || "image"; plan.push({ source:c, kind:"image", title:`Image ${c + 1}` }); if (role === "uid_did") plan.push({source:c,kind:"uid",title:"UID"},{source:c,kind:"did",title:"DID"}); if (role === "xhs") plan.push({source:c,kind:"xhs",title:"\u5c0f\u7ea2\u4e66\u53f7"}); if (role === "phone") plan.push({source:c,kind:"phone",title:"\u624b\u673a\u578b\u53f7"}); }
     const workbook = new ExcelJS.Workbook(), sheet = workbook.addWorksheet("\u56fe\u7247"); sheet.views=[{showGridLines:false}]; sheet.addRow(plan.map((x)=>x.title)); sheet.getRow(1).font={bold:true,color:{argb:"FFFFFFFF"}}; sheet.getRow(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF217A52"}}; sheet.getRow(1).height=24;
     plan.forEach((x,c)=>sheet.getColumn(c+1).width=x.kind==="image"?25:22);
-    for (let r=0;r<rows.length;r+=1) { const row=sheet.getRow(r+2); row.height=100; for (let c=0;c<plan.length;c+=1) { const item=plan[c], value=results[`${r}-${item.source}`]||{}; if(item.kind!=="image") row.getCell(c+1).value=value[item.kind]||""; else if(isImageSource(rows[r][item.source])) { try { const src=await image(rows[r][item.source]), id=workbook.addImage({buffer:src.data,extension:src.type.includes("png")?"png":"jpeg"}); sheet.addImage(id,{tl:{col:c+.1,row:r+1.1},ext:{width:150,height:90}}); } catch { row.getCell(c+1).value="Image download failed"; } } } }
+    for (let r=0;r<rows.length;r+=1) { const row=sheet.getRow(r+2); row.height=100; for (let c=0;c<plan.length;c+=1) { const item=plan[c], value=results[`${r}-${item.source}`]||{}; if(item.kind!=="image") { const cell=row.getCell(c+1); cell.value=String(value[item.kind]||""); cell.numFmt="@"; } else if(isImageSource(rows[r][item.source])) { try { const src=await image(rows[r][item.source]), id=workbook.addImage({buffer:src.data,extension:src.type.includes("png")?"png":"jpeg"}); sheet.addImage(id,{tl:{col:c+.1,row:r+1.1},ext:{width:150,height:90}}); } catch { row.getCell(c+1).value="Image download failed"; } } } }
     const content=await workbook.xlsx.writeBuffer(); res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); res.setHeader("Content-Disposition","attachment; filename=link-images.xlsx"); res.send(Buffer.from(content));
+  } catch (error) { res.status(400).send(error.message || "Export failed"); }
+});
+app.post("/export-fields-xlsx", async (req, res) => {
+  try {
+    const { matrix, columnRoles = [], results = {} } = req.body;
+    if (!Array.isArray(matrix) || !matrix.every(Array.isArray)) throw new Error("Invalid data");
+    const workbook = new ExcelJS.Workbook(), sheet = workbook.addWorksheet("Recognition results");
+    const headers = ["UID", "DID", "\u5c0f\u7ea2\u4e66\u53f7", "\u624b\u673a\u578b\u53f7"];
+    sheet.addRow(headers); sheet.getRow(1).font={bold:true,color:{argb:"FFFFFFFF"}}; sheet.getRow(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF217A52"}};
+    headers.forEach((_, index) => { sheet.getColumn(index + 1).width = 24; });
+    matrix.slice(0,maxRows).forEach((row, rowIndex) => {
+      const values={uid:"",did:"",xhs:"",phone:""};
+      row.forEach((_, columnIndex) => { const role=columnRoles[columnIndex]||"image", item=results[`${rowIndex}-${columnIndex}`]||{}; if(role==="uid_did"){values.uid=item.uid||"";values.did=item.did||""} if(role==="xhs")values.xhs=item.xhs||""; if(role==="phone")values.phone=item.phone||""; });
+      const excelRow=sheet.addRow([values.uid,values.did,values.xhs,values.phone]);
+      excelRow.eachCell((cell) => { cell.value=String(cell.value||""); cell.numFmt="@"; });
+    });
+    const content=await workbook.xlsx.writeBuffer(); res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); res.setHeader("Content-Disposition","attachment; filename=recognition-results.xlsx"); res.send(Buffer.from(content));
   } catch (error) { res.status(400).send(error.message || "Export failed"); }
 });
 app.get("/health", (_, res) => res.json({ ok:true }));
