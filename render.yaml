@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: picture-workspace-api-chtx
+    runtime: node
+    rootDir: cloudbase-backend
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22

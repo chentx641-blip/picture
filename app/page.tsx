@@ -17,6 +17,8 @@ const roleLabels: Record<ColumnRole, string> = { image: "普通图片", uid_did:
 const example =
   "https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=900&q=80\thttps://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=900&q=80\nhttps://images.unsplash.com/photo-1551836022-d5d88e9218df?auto=format&fit=crop&w=900&q=80\thttps://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=900&q=80";
 
+const apiBase = process.env.NEXT_PUBLIC_API_URL || "https://picture-workspace-api-chtx.onrender.com";
+
 function parseMatrix(text: string) {
   return text
     .trim()
@@ -72,7 +74,7 @@ export default function Home() {
     setRecognising(true);
     setNotice("正在识别已选字段图片，请稍候…");
     try {
-      const response = await fetch("http://localhost:3101/recognize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ matrix, columnRoles }) });
+      const response = await fetch(`${apiBase}/recognize`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ matrix, columnRoles }) });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       setResults((current) => {
@@ -123,7 +125,7 @@ export default function Home() {
     setExporting(true);
     setNotice("正在下载图片并生成 Excel，请稍候…");
     try {
-      const response = await fetch("http://localhost:3101/export-xlsx", {
+      const response = await fetch(`${apiBase}/export-xlsx`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ matrix, columnRoles, results }),
