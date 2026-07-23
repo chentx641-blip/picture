@@ -3,104 +3,86 @@ import ExcelJS from "exceljs";
 import { createWorker } from "tesseract.js";
 
 const app = express();
-const maxRows = 100;
-const maxColumns = 16;
-const maxImages = 320;
+const maxRows = 100, maxColumns = 16, maxImages = 320;
 let worker;
-
-app.use(express.json({ limit: "2mb" }));
-app.use((_, response, next) => {
-  response.setHeader("Access-Control-Allow-Origin", "*");
-  response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  next();
-});
-app.options("*", (_, response) => response.sendStatus(204));
+app.use(express.json({ limit: "20mb" }));
+app.use((_, res, next) => { res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS"); res.setHeader("Access-Control-Allow-Headers", "Content-Type"); next(); });
+app.options("*", (_, res) => res.sendStatus(204));
 
 function isImageSource(value) {
   if (typeof value !== "string") return false;
   if (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(value)) return true;
   try { const url = new URL(value); return url.protocol === "http:" || url.protocol === "https:"; } catch { return false; }
 }
-function clean(text) { return text.replace(/：/g, ":").replace(/[\r\n]+/g, "\n").replace(/[ \t]+/g, " "); }
+function clean(text) { return String(text).replace(/[\r\n]+/g, "\n").replace(/[ \t]+/g, " "); }
 function find(text, expression) { return clean(text).match(expression)?.[1]?.trim() || ""; }
+function phoneCandidates(text) {
+  const patterns = [
+    /\b(iPhone\s+(?:[1-9]|1\d|2\d)(?:\s+(?:Pro(?:\s+Max)?|Plus|mini|Air))?)\b/gi,
+    /\b((?:Xiaomi|Redmi)\s*\d{1,3}(?:\s*(?:Pro|Ultra|Max|T|S|SE))?)\b/gi,
+    /\b(nova\s*\d{1,2}(?:\s*(?:Pro|Ultra|SE|i))?)\b/gi,
+    /\b((?:HUAWEI|HONOR|vivo|OPPO|Samsung)\s*[A-Za-z]*\d+[A-Za-z0-9 .+-]{0,18})\b/gi,
+  ];
+  const values = [];
+  for (const expression of patterns) for (const match of text.matchAll(expression)) {
+    const value = match[1].replace(/\s+/g, " ").trim().replace(/\s+(?:HarmonyOS|HyperOS|OriginOS|ColorOS).*$/i, "");
+    if (!values.some((item) => item.value.toLowerCase() === value.toLowerCase())) values.push({ value, index: match.index ?? 0 });
+  }
+  return values;
+}
+function pickPhone(text) {
+  const content = clean(text), candidates = phoneCandidates(content);
+  if (!candidates.length) return "";
+  const modelLabel = /(?:\u578b\s*[\u53f7\u865f]\s*\u540d\s*[\u79f0\u7a31]|\u673a\s*\u578b\s*\u540d\s*[\u79f0\u7a31]|\u6a5f\s*\u578b\s*\u540d\s*[\u79f0\u7a31]|\u624b\s*[\u673a\u6a5f]\s*\u578b\s*[\u53f7\u865f]|Model\s*Name)/i.exec(content);
+  if (modelLabel) { const after = (modelLabel.index ?? 0) + modelLabel[0].length; const hit = candidates.find((x) => x.index >= after && x.index - after < 150); if (hit) return hit.value; }
+  const deviceLabel = /(?:\u8bbe\s*\u5907\s*\u540d\s*\u79f0|\u8a2d\s*\u5099\s*\u540d\s*\u7a31|\u8bbe\s*\u5907\s*\u578b\s*[\u53f7\u865f]|\u8a2d\s*\u5099\s*\u578b\s*[\u53f7\u865f]|Device\s*Name)/i.exec(content);
+  if (deviceLabel) { const after = (deviceLabel.index ?? 0) + deviceLabel[0].length; const hit = candidates.find((x) => x.index >= after && x.index - after < 150); if (hit) return hit.value; }
+  return candidates[0].value;
+}
 function fields(text, role) {
   if (role === "uid_did") return {
-    uid: find(text, /(?:User\s*[IiLl1][dD]|UID|用户\s*ID)\s*[:：]?\s*([A-Za-z0-9_-]{5,})/i),
-    did: find(text, /(?:Device\s*[IiLl1][dD]|DID|设备\s*ID)\s*[:：]?\s*([A-Za-z0-9_-]{5,})/i),
+    uid: find(text, /(?:User\s*[IiLl1][dD]|UID|\u7528\u6237\s*ID)\s*[:\uff1a]?\s*([A-Za-z0-9_-]{5,})/i),
+    did: find(text, /(?:Device\s*[IiLl1][dD]|DID|\u8bbe\u5907\s*ID)\s*[:\uff1a]?\s*([A-Za-z0-9_-]{5,})/i),
   };
-  if (role === "xhs") return { xhs: find(text, /(?:小\s*红\s*书\s*(?:号|ID)|RED\s*ID|XHS)\s*[:：]?\s*([A-Za-z0-9_.-]{3,})/i) };
-  if (role === "phone") {
-    const labelled = find(text, /(?:型号\s*名称|手机\s*型号|设备\s*型号|机型|Model)\s*[:：]?\s*([A-Za-z][A-Za-z0-9 .+_/-]{2,60})/i);
-    const branded = find(text, /\b((?:iPhone|vivo|OPPO|HUAWEI|HONOR|Xiaomi|Redmi|Samsung)[ -]?[A-Za-z0-9][A-Za-z0-9 .+_/-]{0,40})/i);
-    return { phone: labelled || branded };
-  }
+  if (role === "xhs") return { xhs: find(text, /(?:\u5c0f\s*\u7ea2\s*\u4e66\s*(?:\u53f7|ID)|RED\s*ID|XHS)\s*[:\uff1a]?\s*([A-Za-z0-9_.-]{3,})/i) };
+  if (role === "phone") return { phone: pickPhone(text) };
   return {};
 }
-async function image(url) {
-  const inline = /^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(url);
-  if (inline) {
-    const data = Buffer.from(inline[2], "base64");
-    if (data.length > 15 * 1024 * 1024) throw new Error("图片超过 15 MB");
-    return { data, type: inline[1].toLowerCase() };
-  }
-  const response = await fetch(url, { signal: AbortSignal.timeout(20000), redirect: "follow" });
-  if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
+async function image(source) {
+  const inline = /^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(source);
+  if (inline) { const data = Buffer.from(inline[2], "base64"); if (data.length > 15 * 1024 * 1024) throw new Error("Image exceeds 15 MB"); return { data, type: inline[1].toLowerCase() }; }
+  const response = await fetch(source, { signal: AbortSignal.timeout(20000), redirect: "follow" });
+  if (!response.ok) throw new Error(`Image download failed (${response.status})`);
   const type = response.headers.get("content-type")?.split(";")[0] || "image/jpeg";
-  if (!type.startsWith("image/")) throw new Error("链接不是图片");
-  const data = Buffer.from(await response.arrayBuffer());
-  if (data.length > 15 * 1024 * 1024) throw new Error("图片超过 15 MB");
-  return { data, type };
+  if (!type.startsWith("image/")) throw new Error("Source is not an image");
+  const data = Buffer.from(await response.arrayBuffer()); if (data.length > 15 * 1024 * 1024) throw new Error("Image exceeds 15 MB"); return { data, type };
 }
 async function ocr() { if (!worker) worker = await createWorker("chi_sim+eng", 1, { logger: () => undefined }); return worker; }
 
-app.post("/recognize", async (request, response) => {
+app.post("/recognize", async (req, res) => {
   try {
-    const { matrix, columnRoles = [] } = request.body;
-    if (!Array.isArray(matrix)) throw new Error("数据格式无效");
-    const result = {};
-    const engine = await ocr();
+    const { matrix, columnRoles = [] } = req.body; if (!Array.isArray(matrix)) throw new Error("Invalid data");
+    const result = {}, engine = await ocr();
     for (let r = 0; r < Math.min(matrix.length, maxRows); r += 1) for (let c = 0; c < Math.min(matrix[r].length, maxColumns); c += 1) {
-      const role = columnRoles[c] || "image";
-      if (role === "image" || !isImageSource(matrix[r][c])) continue;
+      const role = columnRoles[c] || "image"; if (role === "image" || !isImageSource(matrix[r][c])) continue;
       try { const source = await image(matrix[r][c]); const read = await engine.recognize(source.data); result[`${r}-${c}`] = fields(read.data.text, role); } catch { result[`${r}-${c}`] = {}; }
     }
-    response.json(result);
-  } catch (error) { response.status(400).send(error.message || "识别失败"); }
+    res.json(result);
+  } catch (error) { res.status(400).send(error.message || "Recognition failed"); }
 });
 
-app.post("/export-xlsx", async (request, response) => {
+app.post("/export-xlsx", async (req, res) => {
   try {
-    const { matrix, columnRoles = [], results = {} } = request.body;
-    if (!Array.isArray(matrix) || !matrix.every(Array.isArray)) throw new Error("数据格式无效");
-    const rows = matrix.slice(0, maxRows);
-    const columns = Math.min(maxColumns, Math.max(0, ...rows.map((row) => row.length)));
-    if (!rows.length || !columns || rows.length * columns > maxImages) throw new Error("导出数据超出限制");
+    const { matrix, columnRoles = [], results = {} } = req.body; if (!Array.isArray(matrix) || !matrix.every(Array.isArray)) throw new Error("Invalid data");
+    const rows = matrix.slice(0, maxRows), columns = Math.min(maxColumns, Math.max(0, ...rows.map((row) => row.length)));
+    if (!rows.length || !columns || rows.length * columns > maxImages) throw new Error("Export limit exceeded");
     const plan = [];
-    for (let c = 0; c < columns; c += 1) {
-      const role = columnRoles[c] || "image";
-      plan.push({ source: c, kind: "image", title: `图片列 ${c + 1}` });
-      if (role === "uid_did") plan.push({ source: c, kind: "uid", title: "UID" }, { source: c, kind: "did", title: "DID" });
-      if (role === "xhs") plan.push({ source: c, kind: "xhs", title: "小红书号" });
-      if (role === "phone") plan.push({ source: c, kind: "phone", title: "手机型号" });
-    }
-    const workbook = new ExcelJS.Workbook(); const sheet = workbook.addWorksheet("图片"); sheet.views = [{ showGridLines: false }];
-    sheet.addRow(plan.map((item) => item.title)); sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } }; sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF217A52" } }; sheet.getRow(1).height = 24;
-    plan.forEach((item, c) => { sheet.getColumn(c + 1).width = item.kind === "image" ? 25 : 22; });
-    for (let r = 0; r < rows.length; r += 1) {
-      const row = sheet.getRow(r + 2); row.height = 100;
-      for (let c = 0; c < plan.length; c += 1) {
-        const item = plan[c]; const value = results[`${r}-${item.source}`] || {};
-        if (item.kind !== "image") row.getCell(c + 1).value = value[item.kind] || "";
-        else if (isImageSource(rows[r][item.source])) {
-          try { const source = await image(rows[r][item.source]); const imageId = workbook.addImage({ buffer: source.data, extension: source.type.includes("png") ? "png" : "jpeg" }); sheet.addImage(imageId, { tl: { col: c + 0.1, row: r + 1.1 }, ext: { width: 150, height: 90 } }); } catch { row.getCell(c + 1).value = "图片下载失败"; }
-        }
-      }
-    }
-    const content = await workbook.xlsx.writeBuffer();
-    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''%E9%93%BE%E6%8E%A5%E8%BD%AC%E5%9B%BE%E7%89%87.xlsx"); response.send(Buffer.from(content));
-  } catch (error) { response.status(400).send(error.message || "导出失败"); }
+    for (let c = 0; c < columns; c += 1) { const role = columnRoles[c] || "image"; plan.push({ source:c, kind:"image", title:`Image ${c + 1}` }); if (role === "uid_did") plan.push({source:c,kind:"uid",title:"UID"},{source:c,kind:"did",title:"DID"}); if (role === "xhs") plan.push({source:c,kind:"xhs",title:"\u5c0f\u7ea2\u4e66\u53f7"}); if (role === "phone") plan.push({source:c,kind:"phone",title:"\u624b\u673a\u578b\u53f7"}); }
+    const workbook = new ExcelJS.Workbook(), sheet = workbook.addWorksheet("\u56fe\u7247"); sheet.views=[{showGridLines:false}]; sheet.addRow(plan.map((x)=>x.title)); sheet.getRow(1).font={bold:true,color:{argb:"FFFFFFFF"}}; sheet.getRow(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF217A52"}}; sheet.getRow(1).height=24;
+    plan.forEach((x,c)=>sheet.getColumn(c+1).width=x.kind==="image"?25:22);
+    for (let r=0;r<rows.length;r+=1) { const row=sheet.getRow(r+2); row.height=100; for (let c=0;c<plan.length;c+=1) { const item=plan[c], value=results[`${r}-${item.source}`]||{}; if(item.kind!=="image") row.getCell(c+1).value=value[item.kind]||""; else if(isImageSource(rows[r][item.source])) { try { const src=await image(rows[r][item.source]), id=workbook.addImage({buffer:src.data,extension:src.type.includes("png")?"png":"jpeg"}); sheet.addImage(id,{tl:{col:c+.1,row:r+1.1},ext:{width:150,height:90}}); } catch { row.getCell(c+1).value="Image download failed"; } } } }
+    const content=await workbook.xlsx.writeBuffer(); res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); res.setHeader("Content-Disposition","attachment; filename=link-images.xlsx"); res.send(Buffer.from(content));
+  } catch (error) { res.status(400).send(error.message || "Export failed"); }
 });
-
-app.get("/health", (_, response) => response.json({ ok: true }));
+app.get("/health", (_, res) => res.json({ ok:true }));
 app.listen(process.env.PORT || 8080, () => console.log("Picture Workspace API ready"));
