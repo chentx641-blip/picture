@@ -17,7 +17,9 @@ app.use((_, response, next) => {
 });
 app.options("*", (_, response) => response.sendStatus(204));
 
-function isUrl(value) {
+function isImageSource(value) {
+  if (typeof value !== "string") return false;
+  if (/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(value)) return true;
   try { const url = new URL(value); return url.protocol === "http:" || url.protocol === "https:"; } catch { return false; }
 }
 function clean(text) { return text.replace(/：/g, ":").replace(/[\r\n]+/g, "\n").replace(/[ \t]+/g, " "); }
@@ -36,6 +38,12 @@ function fields(text, role) {
   return {};
 }
 async function image(url) {
+  const inline = /^data:(image\/(?:png|jpe?g|webp|gif));base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(url);
+  if (inline) {
+    const data = Buffer.from(inline[2], "base64");
+    if (data.length > 15 * 1024 * 1024) throw new Error("图片超过 15 MB");
+    return { data, type: inline[1].toLowerCase() };
+  }
   const response = await fetch(url, { signal: AbortSignal.timeout(20000), redirect: "follow" });
   if (!response.ok) throw new Error(`图片下载失败 (${response.status})`);
   const type = response.headers.get("content-type")?.split(";")[0] || "image/jpeg";
@@ -54,7 +62,7 @@ app.post("/recognize", async (request, response) => {
     const engine = await ocr();
     for (let r = 0; r < Math.min(matrix.length, maxRows); r += 1) for (let c = 0; c < Math.min(matrix[r].length, maxColumns); c += 1) {
       const role = columnRoles[c] || "image";
-      if (role === "image" || !isUrl(matrix[r][c])) continue;
+      if (role === "image" || !isImageSource(matrix[r][c])) continue;
       try { const source = await image(matrix[r][c]); const read = await engine.recognize(source.data); result[`${r}-${c}`] = fields(read.data.text, role); } catch { result[`${r}-${c}`] = {}; }
     }
     response.json(result);
@@ -84,7 +92,7 @@ app.post("/export-xlsx", async (request, response) => {
       for (let c = 0; c < plan.length; c += 1) {
         const item = plan[c]; const value = results[`${r}-${item.source}`] || {};
         if (item.kind !== "image") row.getCell(c + 1).value = value[item.kind] || "";
-        else if (isUrl(rows[r][item.source])) {
+        else if (isImageSource(rows[r][item.source])) {
           try { const source = await image(rows[r][item.source]); const imageId = workbook.addImage({ buffer: source.data, extension: source.type.includes("png") ? "png" : "jpeg" }); sheet.addImage(imageId, { tl: { col: c + 0.1, row: r + 1.1 }, ext: { width: 150, height: 90 } }); } catch { row.getCell(c + 1).value = "图片下载失败"; }
         }
       }
