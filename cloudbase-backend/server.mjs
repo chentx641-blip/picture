@@ -39,12 +39,22 @@ function pickPhone(text) {
   if (deviceLabel) { const after = (deviceLabel.index ?? 0) + deviceLabel[0].length; const hit = candidates.find((x) => x.index >= after && x.index - after < 150); if (hit) return hit.value; }
   return candidates[0].value;
 }
+function pickXhs(text) {
+  const content = clean(text);
+  const label = /(?:\u5c0f\s*[\u7ea2\u7d05]\s*[\u4e66\u66f8]\s*[\u53f7\u865f]|RED\s*ID|XHS)\s*[:\uff1a]?\s*([A-Za-z0-9_.-]{3,})/i;
+  const direct = content.match(label)?.[1]?.trim(); if (direct) return direct;
+  const labelledLine = content.split("\n").find((line) => /\u5c0f\s*[\u7ea2\u7d05]\s*[\u4e66\u66f8]/i.test(line));
+  const fromLine = labelledLine?.match(/\b(\d{6,15})\b/)?.[1]; if (fromLine) return fromLine;
+  // Some stylized Traditional-Chinese screenshots lose label glyphs in OCR; accept one long ID near the profile header only.
+  const candidates = [...content.slice(0, 700).matchAll(/\b(\d{7,12})\b/g)].map((item) => item[1]);
+  return candidates.length === 1 ? candidates[0] : "";
+}
 function fields(text, role) {
   if (role === "uid_did") return {
     uid: find(text, /(?:User\s*[IiLl1][dD]|UID|\u7528\u6237\s*ID)\s*[:\uff1a]?\s*([A-Za-z0-9_-]{5,})/i),
     did: find(text, /(?:Device\s*[IiLl1][dD]|DID|\u8bbe\u5907\s*ID)\s*[:\uff1a]?\s*([A-Za-z0-9_-]{5,})/i),
   };
-  if (role === "xhs") return { xhs: find(text, /(?:\u5c0f\s*\u7ea2\s*\u4e66\s*(?:\u53f7|ID)|RED\s*ID|XHS)\s*[:\uff1a]?\s*([A-Za-z0-9_.-]{3,})/i) };
+  if (role === "xhs") return { xhs: pickXhs(text) };
   if (role === "phone") return { phone: pickPhone(text) };
   return {};
 }
@@ -57,7 +67,7 @@ async function image(source) {
   if (!type.startsWith("image/")) throw new Error("Source is not an image");
   const data = Buffer.from(await response.arrayBuffer()); if (data.length > 15 * 1024 * 1024) throw new Error("Image exceeds 15 MB"); return { data, type };
 }
-async function ocr() { if (!worker) worker = await createWorker("chi_sim+eng", 1, { logger: () => undefined }); return worker; }
+async function ocr() { if (!worker) worker = await createWorker("chi_sim+chi_tra+eng", 1, { logger: () => undefined }); return worker; }
 
 app.post("/recognize", async (req, res) => {
   try {
